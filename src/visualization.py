@@ -574,104 +574,518 @@ def diagnostic_dashboard(
 
 
 # =============================================================================
-#  Column Schematic
+#  Column Schematic — P&ID Style
 # =============================================================================
 
-def column_schematic(
+def _draw_vessel(ax, x_left, x_right, y_bot, y_top, **kw):
+    """Draw a rounded-rectangle column vessel."""
+    from matplotlib.path import Path
+    import matplotlib.patches as mpatches
+    r = 0.3
+    verts = [
+        (x_left + r, y_bot), (x_right - r, y_bot),                 # bottom
+        (x_right, y_bot), (x_right, y_bot + r),                    # BR corner
+        (x_right, y_top - r), (x_right, y_top), (x_right - r, y_top),  # TR
+        (x_left + r, y_top), (x_left, y_top), (x_left, y_top - r),     # TL
+        (x_left, y_bot + r), (x_left, y_bot), (x_left + r, y_bot),     # BL
+    ]
+    codes = [Path.MOVETO, Path.LINETO,
+             Path.CURVE3, Path.CURVE3,
+             Path.LINETO, Path.CURVE3, Path.CURVE3,
+             Path.LINETO, Path.CURVE3, Path.CURVE3,
+             Path.LINETO, Path.CURVE3, Path.CURVE3]
+    path = Path(verts, codes)
+    defaults = dict(facecolor='#F8F9FA', edgecolor='#2C3E50', linewidth=2.5)
+    defaults.update(kw)
+    patch = mpatches.PathPatch(path, **defaults)
+    ax.add_patch(patch)
+
+
+def column_schematic_pid(
     model,
     x: torch.Tensor,
     context: Optional[torch.Tensor] = None,
-    title: str = "CFNN Column Schematic",
-    figsize: tuple = (6, 10),
+    title: str = "CFNN Column — P&ID Schematic",
+    figsize: tuple = (10, 14),
     save_path: Optional[str] = None,
 ) -> plt.Figure:
     """
-    Draw a schematic of the CFNN column showing plate arrangement,
-    stream flows, and transfer amounts.
+    P&ID-style column schematic with internal tray detail, condenser/reboiler
+    vessels, stream arrows with labels, and per-plate diagnostics.
     """
     _apply_style()
     result = model.forward_with_intermediates(x, context)
-
-    fig, ax = plt.subplots(figsize=figsize)
-    ax.set_xlim(-1, 5)
+    da_data = damkohler_number(model, x, context)
+    da_plates = da_data['per_plate']
 
     is_distillation = 'gas_rect' in result
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Column geometry
+    col_left, col_right = 2.0, 8.0
+    col_cx = (col_left + col_right) / 2
+    plate_h = 1.0
+    tray_inset = 0.3
 
     if not is_distillation:
+        # --- CFNN-A (Absorption) ---
         n_plates = len(result['deltas'])
-        ax.set_ylim(-1, n_plates + 2)
+        col_bot = 0.5
+        col_top = col_bot + (n_plates + 1) * plate_h
 
+        _draw_vessel(ax, col_left, col_right, col_bot, col_top)
+
+        # Internal trays
         for i in range(n_plates):
-            y = i + 0.5
-            delta_norm = result['deltas'][i].norm(dim=-1).mean().item()
-            width = min(4, max(0.5, delta_norm * 10))
+            y = col_bot + (i + 0.5) * plate_h + 0.25
+            dn = result['deltas'][i].norm(dim=-1).mean().item()
+            da_val = da_plates[i] if i < len(da_plates) else 0
 
-            rect = mpatches.FancyBboxPatch((0.5, y - 0.15), width, 0.3,
-                                            boxstyle="round,pad=0.05",
-                                            facecolor=TRANSFER_COLOR, alpha=0.6,
-                                            edgecolor='black')
-            ax.add_patch(rect)
-            ax.text(2.5, y, f'Plate {i}\nD={delta_norm:.3f}',
-                    ha='center', va='center', fontsize=9)
+            # Tray line (width proportional to transfer)
+            alpha_line = min(1.0, 0.3 + dn * 3)
+            lw = max(1.5, min(5, dn * 20))
+            ax.plot([col_left + tray_inset, col_right - tray_inset], [y, y],
+                    color=TRANSFER_COLOR, linewidth=lw, alpha=alpha_line,
+                    solid_capstyle='round')
 
-        # Arrows
-        ax.annotate('', xy=(0.2, n_plates + 0.5), xytext=(0.2, -0.5),
-                    arrowprops=dict(arrowstyle='->', color=GAS_COLOR, lw=2.5))
-        ax.text(-0.5, n_plates / 2, 'Gas (up)', color=GAS_COLOR,
-                fontsize=12, fontweight='bold', rotation=90, va='center')
+            # Tray label (right side)
+            ax.text(col_right + 0.3, y,
+                    f'P{i}  Da={da_val:.3f}  ||\u0394||={dn:.3f}',
+                    fontsize=9, va='center', fontfamily='monospace',
+                    color='#2C3E50')
 
-        ax.annotate('', xy=(4.5, -0.5), xytext=(4.5, n_plates + 0.5),
-                    arrowprops=dict(arrowstyle='->', color=LIQUID_COLOR, lw=2.5))
-        ax.text(4.8, n_plates / 2, 'Liquid (down)', color=LIQUID_COLOR,
-                fontsize=12, fontweight='bold', rotation=90, va='center')
+            # Small downcomers
+            if i < n_plates - 1:
+                dc_x = col_left + tray_inset + 0.15 if i % 2 == 0 else col_right - tray_inset - 0.15
+                ax.annotate('', xy=(dc_x, y - 0.15), xytext=(dc_x, y + 0.15),
+                            arrowprops=dict(arrowstyle='->', color=LIQUID_COLOR,
+                                            lw=1.2, alpha=0.5))
+
+        # Gas arrow (up, left side)
+        gas_x = col_left - 0.8
+        ax.annotate('', xy=(gas_x, col_top + 0.8), xytext=(gas_x, col_bot - 0.3),
+                    arrowprops=dict(arrowstyle='->', color=GAS_COLOR, lw=3))
+        ax.text(gas_x - 0.6, (col_bot + col_top) / 2, 'GAS',
+                color=GAS_COLOR, fontsize=14, fontweight='bold',
+                rotation=90, va='center', ha='center')
+
+        # Liquid arrow (down, right side)
+        liq_x = col_right + 3.5
+        ax.annotate('', xy=(liq_x, col_bot - 0.3), xytext=(liq_x, col_top + 0.8),
+                    arrowprops=dict(arrowstyle='->', color=LIQUID_COLOR, lw=3))
+        ax.text(liq_x + 0.6, (col_bot + col_top) / 2, 'LIQUID',
+                color=LIQUID_COLOR, fontsize=14, fontweight='bold',
+                rotation=90, va='center', ha='center')
+
+        # Gas inlet label
+        gas_norms = [g.norm(dim=-1).mean().item() for g in result['gas_states']]
+        liq_norms = [l_.norm(dim=-1).mean().item() for l_ in result['liquid_states']]
+        ax.text(gas_x, col_bot - 0.6, f'||g\u2080||={gas_norms[0]:.2f}',
+                fontsize=9, ha='center', color=GAS_COLOR, fontfamily='monospace')
+        ax.text(gas_x, col_top + 1.1, f'||g_N||={gas_norms[-1]:.2f}',
+                fontsize=9, ha='center', color=GAS_COLOR, fontfamily='monospace')
+        ax.text(liq_x, col_top + 1.1, f'||l\u2080||={liq_norms[0]:.2f}',
+                fontsize=9, ha='center', color=LIQUID_COLOR, fontfamily='monospace')
+        ax.text(liq_x, col_bot - 0.6, f'||l_N||={liq_norms[-1]:.2f}',
+                fontsize=9, ha='center', color=LIQUID_COLOR, fontfamily='monospace')
+
+        ax.set_xlim(-0.5, col_right + 5)
+        ax.set_ylim(col_bot - 1.5, col_top + 2)
 
     else:
+        # --- CFNN-D (Distillation) ---
         n_r = len(result['deltas_rect'])
         n_s = len(result['deltas_strip'])
-        n_total = n_r + n_s + 1
-        ax.set_ylim(-1, n_total + 2)
+        n_total = n_r + n_s + 1  # +1 for feed
+        col_bot = 1.5
+        col_top = col_bot + (n_total + 1) * plate_h
 
-        # Stripping section (bottom)
-        for i in range(n_s):
-            y = i + 0.5
-            dn = result['deltas_strip'][n_s - 1 - i].norm(dim=-1).mean().item()
-            width = min(4, max(0.5, dn * 10))
-            rect = mpatches.FancyBboxPatch((0.5, y - 0.15), width, 0.3,
-                                            boxstyle="round,pad=0.05",
-                                            facecolor=STRIP_COLOR, alpha=0.5,
-                                            edgecolor='black')
-            ax.add_patch(rect)
-            ax.text(2.5, y, f'Strip {n_s-1-i}\nD={dn:.3f}',
-                    ha='center', va='center', fontsize=8)
+        _draw_vessel(ax, col_left, col_right, col_bot, col_top)
 
-        # Feed plate
-        feed_y = n_s + 0.5
-        rect = mpatches.FancyBboxPatch((0.2, feed_y - 0.2), 4.0, 0.4,
-                                        boxstyle="round,pad=0.05",
-                                        facecolor=FEED_COLOR, alpha=0.5,
-                                        edgecolor='black', linewidth=2)
-        ax.add_patch(rect)
+        reflux = result['reflux_ratio'].mean().item()
+        reboil = result['reboil_ratio'].mean().item()
         q_val = result['feed_q'].mean().item()
-        ax.text(2.5, feed_y, f'FEED (q={q_val:.3f})',
-                ha='center', va='center', fontsize=10, fontweight='bold')
 
-        # Rectifying section (top)
+        # --- Condenser (top) ---
+        cond_y = col_top + 0.8
+        cond_rect = mpatches.FancyBboxPatch(
+            (col_cx - 1.5, cond_y - 0.3), 3.0, 0.6,
+            boxstyle="round,pad=0.1", facecolor='#D5F5E3',
+            edgecolor='#27AE60', linewidth=2)
+        ax.add_patch(cond_rect)
+        ax.text(col_cx, cond_y, f'CONDENSER  R={reflux:.3f}',
+                ha='center', va='center', fontsize=10, fontweight='bold',
+                color='#27AE60')
+        # Pipe from column to condenser
+        ax.plot([col_cx, col_cx], [col_top, cond_y - 0.3],
+                color='#2C3E50', linewidth=2)
+        # Reflux return arrow
+        ax.annotate('', xy=(col_left + 0.5, col_top),
+                    xytext=(col_cx - 1.5, cond_y - 0.1),
+                    arrowprops=dict(arrowstyle='->', color=LIQUID_COLOR,
+                                    lw=2, connectionstyle='arc3,rad=0.3'))
+        ax.text(col_left - 0.3, cond_y - 0.2, 'reflux',
+                fontsize=8, color=LIQUID_COLOR, fontstyle='italic')
+        # Distillate out
+        ax.annotate('', xy=(col_cx + 2.8, cond_y),
+                    xytext=(col_cx + 1.5, cond_y),
+                    arrowprops=dict(arrowstyle='->', color='#27AE60', lw=2))
+        ax.text(col_cx + 3.0, cond_y, 'Distillate',
+                fontsize=9, va='center', color='#27AE60', fontweight='bold')
+
+        # --- Reboiler (bottom) ---
+        reb_y = col_bot - 1.0
+        reb_rect = mpatches.FancyBboxPatch(
+            (col_cx - 1.5, reb_y - 0.3), 3.0, 0.6,
+            boxstyle="round,pad=0.1", facecolor='#FADBD8',
+            edgecolor=GAS_COLOR, linewidth=2)
+        ax.add_patch(reb_rect)
+        ax.text(col_cx, reb_y, f'REBOILER  Rb={reboil:.3f}',
+                ha='center', va='center', fontsize=10, fontweight='bold',
+                color=GAS_COLOR)
+        # Pipe from column to reboiler
+        ax.plot([col_cx, col_cx], [col_bot, reb_y + 0.3],
+                color='#2C3E50', linewidth=2)
+        # Vapor return arrow
+        ax.annotate('', xy=(col_right - 0.5, col_bot),
+                    xytext=(col_cx + 1.5, reb_y + 0.1),
+                    arrowprops=dict(arrowstyle='->', color=GAS_COLOR,
+                                    lw=2, connectionstyle='arc3,rad=-0.3'))
+        ax.text(col_right + 0.3, reb_y + 0.2, 'boilup',
+                fontsize=8, color=GAS_COLOR, fontstyle='italic')
+        # Bottoms out
+        ax.annotate('', xy=(col_cx + 2.8, reb_y),
+                    xytext=(col_cx + 1.5, reb_y),
+                    arrowprops=dict(arrowstyle='->', color=GAS_COLOR, lw=2))
+        ax.text(col_cx + 3.0, reb_y, 'Bottoms',
+                fontsize=9, va='center', color=GAS_COLOR, fontweight='bold')
+
+        # --- Stripping plates (bottom of column) ---
+        da_idx = 0
+        for i in range(n_s):
+            y = col_bot + (i + 0.5) * plate_h + 0.25
+            dn = result['deltas_strip'][n_s - 1 - i].norm(dim=-1).mean().item()
+            da_val = da_plates[da_idx] if da_idx < len(da_plates) else 0
+            da_idx += 1
+
+            lw = max(1.5, min(5, dn * 20))
+            ax.plot([col_left + tray_inset, col_right - tray_inset], [y, y],
+                    color=STRIP_COLOR, linewidth=lw, alpha=0.7,
+                    solid_capstyle='round')
+
+            ax.text(col_right + 0.3, y,
+                    f'S{n_s-1-i}  Da={da_val:.3f}  ||\u0394||={dn:.3f}',
+                    fontsize=9, va='center', fontfamily='monospace',
+                    color=STRIP_COLOR)
+
+        # --- Feed plate ---
+        feed_y = col_bot + (n_s + 0.5) * plate_h + 0.25
+        ax.plot([col_left + tray_inset, col_right - tray_inset],
+                [feed_y, feed_y],
+                color=FEED_COLOR, linewidth=4, solid_capstyle='round')
+        # Feed arrow from left
+        ax.annotate('', xy=(col_left, feed_y),
+                    xytext=(col_left - 1.5, feed_y),
+                    arrowprops=dict(arrowstyle='->', color=FEED_COLOR, lw=3))
+        ax.text(col_left - 1.8, feed_y + 0.3,
+                f'FEED\nq={q_val:.3f}', fontsize=10, fontweight='bold',
+                ha='center', color=FEED_COLOR)
+
+        # --- Rectifying plates (top of column) ---
         for i in range(n_r):
-            y = n_s + 1.5 + i
+            y = col_bot + (n_s + 1 + i + 0.5) * plate_h + 0.25
             dn = result['deltas_rect'][i].norm(dim=-1).mean().item()
-            width = min(4, max(0.5, dn * 10))
-            rect = mpatches.FancyBboxPatch((0.5, y - 0.15), width, 0.3,
-                                            boxstyle="round,pad=0.05",
-                                            facecolor=RECT_COLOR, alpha=0.5,
-                                            edgecolor='black')
-            ax.add_patch(rect)
-            ax.text(2.5, y, f'Rect {i}\nD={dn:.3f}',
-                    ha='center', va='center', fontsize=8)
+            da_val = da_plates[da_idx] if da_idx < len(da_plates) else 0
+            da_idx += 1
 
-    ax.set_title(title, fontsize=14)
+            lw = max(1.5, min(5, dn * 20))
+            ax.plot([col_left + tray_inset, col_right - tray_inset], [y, y],
+                    color=RECT_COLOR, linewidth=lw, alpha=0.7,
+                    solid_capstyle='round')
+
+            ax.text(col_right + 0.3, y,
+                    f'R{i}  Da={da_val:.3f}  ||\u0394||={dn:.3f}',
+                    fontsize=9, va='center', fontfamily='monospace',
+                    color=RECT_COLOR)
+
+        # Section labels inside column
+        strip_mid = col_bot + (n_s / 2) * plate_h + 0.25
+        rect_mid = col_bot + (n_s + 1 + n_r / 2) * plate_h + 0.25
+        ax.text(col_cx, strip_mid, 'STRIPPING', fontsize=11,
+                ha='center', va='center', color=STRIP_COLOR,
+                fontweight='bold', alpha=0.3, fontfamily='monospace')
+        ax.text(col_cx, rect_mid, 'RECTIFYING', fontsize=11,
+                ha='center', va='center', color=RECT_COLOR,
+                fontweight='bold', alpha=0.3, fontfamily='monospace')
+
+        ax.set_xlim(-1, col_right + 5.5)
+        ax.set_ylim(reb_y - 1.5, cond_y + 1.5)
+
+    # Model info box
+    params = model.count_parameters()
+    info = f'Parameters: {params:,}'
+    ax.text(0.02, 0.02, info, transform=ax.transAxes, fontsize=9,
+            verticalalignment='bottom', fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8,
+                      edgecolor='#BDC3C7'))
+
+    ax.set_title(title, fontsize=16, fontweight='bold', pad=15)
+    ax.axis('off')
+    ax.set_aspect('equal')
+
+    if save_path:
+        fig.savefig(save_path)
+    plt.tight_layout()
+    return fig
+
+
+# =============================================================================
+#  Column Schematic — Sankey / Flow Style
+# =============================================================================
+
+def column_schematic_sankey(
+    model,
+    x: torch.Tensor,
+    context: Optional[torch.Tensor] = None,
+    title: str = "CFNN Column — Flow Diagram",
+    figsize: tuple = (14, 10),
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Sankey-style flow diagram where stream widths are proportional to
+    ||gas|| and ||liquid|| norms, and cross-flows show transfer amounts.
+    """
+    _apply_style()
+    result = model.forward_with_intermediates(x, context)
+    is_distillation = 'gas_rect' in result
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    if not is_distillation:
+        gas_norms = [g.norm(dim=-1).mean().item() for g in result['gas_states']]
+        liq_norms = [l_.norm(dim=-1).mean().item() for l_ in result['liquid_states']]
+        delta_norms = [d.norm(dim=-1).mean().item() for d in result['deltas']]
+        n_plates = len(delta_norms)
+
+        # Layout
+        plate_spacing = 2.0
+        gas_x = 2.0    # gas stream center
+        liq_x = 10.0   # liquid stream center
+        norm_scale = 0.15  # width scale
+
+        for i in range(n_plates + 1):
+            y = i * plate_spacing
+
+            # Gas stream segment
+            if i < len(gas_norms):
+                gw = max(0.15, gas_norms[i] * norm_scale)
+                if i < n_plates:
+                    gw_next = max(0.15, gas_norms[i + 1] * norm_scale) if i + 1 < len(gas_norms) else gw
+                    y_next = (i + 1) * plate_spacing
+                    # Tapered gas stream
+                    verts_g = [
+                        (gas_x - gw / 2, y), (gas_x + gw / 2, y),
+                        (gas_x + gw_next / 2, y_next), (gas_x - gw_next / 2, y_next),
+                        (gas_x - gw / 2, y),
+                    ]
+                    from matplotlib.patches import Polygon
+                    poly = Polygon(verts_g, facecolor=GAS_COLOR, alpha=0.4,
+                                   edgecolor=GAS_COLOR, linewidth=1)
+                    ax.add_patch(poly)
+
+            # Liquid stream segment (flows down, so draw top to bottom)
+            if i < len(liq_norms):
+                lw = max(0.15, liq_norms[i] * norm_scale)
+                if i < n_plates:
+                    lw_next = max(0.15, liq_norms[i + 1] * norm_scale) if i + 1 < len(liq_norms) else lw
+                    y_next = (i + 1) * plate_spacing
+                    verts_l = [
+                        (liq_x - lw / 2, y), (liq_x + lw / 2, y),
+                        (liq_x + lw_next / 2, y_next), (liq_x - lw_next / 2, y_next),
+                        (liq_x - lw / 2, y),
+                    ]
+                    from matplotlib.patches import Polygon
+                    poly = Polygon(verts_l, facecolor=LIQUID_COLOR, alpha=0.4,
+                                   edgecolor=LIQUID_COLOR, linewidth=1)
+                    ax.add_patch(poly)
+
+            # Transfer cross-flow at each plate
+            if i < n_plates:
+                y_plate = y + plate_spacing * 0.5
+                dn = delta_norms[i]
+                tw = max(0.05, dn * 2)  # arrow width
+
+                # Horizontal transfer arrow (gas -> liquid)
+                ax.annotate(
+                    '', xy=(liq_x - 0.5, y_plate),
+                    xytext=(gas_x + 0.5, y_plate),
+                    arrowprops=dict(arrowstyle='->', color=TRANSFER_COLOR,
+                                    lw=max(1, tw * 3), alpha=0.7))
+
+                # Plate label
+                ax.text((gas_x + liq_x) / 2, y_plate + 0.3,
+                        f'Plate {i}', fontsize=10, ha='center',
+                        fontweight='bold', color='#2C3E50')
+                ax.text((gas_x + liq_x) / 2, y_plate - 0.3,
+                        f'||\u0394||={dn:.3f}', fontsize=9, ha='center',
+                        fontfamily='monospace', color=TRANSFER_COLOR)
+
+                # Plate background
+                plate_rect = mpatches.FancyBboxPatch(
+                    (gas_x + 0.8, y_plate - 0.4), liq_x - gas_x - 1.6, 0.8,
+                    boxstyle="round,pad=0.1", facecolor='#F8F9FA',
+                    edgecolor='#BDC3C7', linewidth=1, alpha=0.5, zorder=0)
+                ax.add_patch(plate_rect)
+
+        # Stream labels
+        ax.text(gas_x, -0.8, f'GAS IN\n||g\u2080||={gas_norms[0]:.2f}',
+                ha='center', fontsize=11, fontweight='bold', color=GAS_COLOR)
+        top_y = n_plates * plate_spacing
+        ax.text(gas_x, top_y + 0.8,
+                f'GAS OUT\n||g_N||={gas_norms[-1]:.2f}',
+                ha='center', fontsize=11, fontweight='bold', color=GAS_COLOR)
+
+        ax.text(liq_x, top_y + 0.8,
+                f'LIQUID IN\n||l\u2080||={liq_norms[0]:.2f}',
+                ha='center', fontsize=11, fontweight='bold', color=LIQUID_COLOR)
+        ax.text(liq_x, -0.8,
+                f'LIQUID OUT\n||l_N||={liq_norms[-1]:.2f}',
+                ha='center', fontsize=11, fontweight='bold', color=LIQUID_COLOR)
+
+        # Direction arrows
+        ax.annotate('', xy=(gas_x - 1, top_y), xytext=(gas_x - 1, 0),
+                    arrowprops=dict(arrowstyle='->', color=GAS_COLOR,
+                                    lw=2, alpha=0.3))
+        ax.annotate('', xy=(liq_x + 1, 0), xytext=(liq_x + 1, top_y),
+                    arrowprops=dict(arrowstyle='->', color=LIQUID_COLOR,
+                                    lw=2, alpha=0.3))
+
+        ax.set_xlim(-0.5, liq_x + 2.5)
+        ax.set_ylim(-2, top_y + 2)
+
+    else:
+        # --- CFNN-D Sankey ---
+        gas_r = [g.norm(dim=-1).mean().item() for g in result['gas_rect']]
+        liq_r = [l_.norm(dim=-1).mean().item() for l_ in result['liquid_rect']]
+        gas_s = [g.norm(dim=-1).mean().item() for g in result['gas_strip']]
+        liq_s = [l_.norm(dim=-1).mean().item() for l_ in result['liquid_strip']]
+        delta_r = [d.norm(dim=-1).mean().item() for d in result['deltas_rect']]
+        delta_s = [d.norm(dim=-1).mean().item() for d in result['deltas_strip']]
+
+        reflux = result['reflux_ratio'].mean().item()
+        reboil = result['reboil_ratio'].mean().item()
+        q_val = result['feed_q'].mean().item()
+
+        plate_spacing = 2.0
+        gas_x, liq_x = 2.0, 10.0
+        norm_scale = 0.15
+        cx = (gas_x + liq_x) / 2
+
+        # Build combined plate list: strip (bottom) + feed + rect (top)
+        all_plates = []
+        for i in range(len(delta_s)):
+            all_plates.append(('strip', i, delta_s[len(delta_s) - 1 - i]))
+        all_plates.append(('feed', 0, 0))
+        for i in range(len(delta_r)):
+            all_plates.append(('rect', i, delta_r[i]))
+
+        for idx, (ptype, pi, dn) in enumerate(all_plates):
+            y = idx * plate_spacing
+            y_next = (idx + 1) * plate_spacing
+
+            if ptype == 'feed':
+                # Feed plate
+                feed_rect = mpatches.FancyBboxPatch(
+                    (gas_x - 0.5, y + plate_spacing * 0.2),
+                    liq_x - gas_x + 1, plate_spacing * 0.6,
+                    boxstyle="round,pad=0.15", facecolor=FEED_COLOR,
+                    edgecolor=FEED_COLOR, linewidth=2, alpha=0.3)
+                ax.add_patch(feed_rect)
+                ax.text(cx, y + plate_spacing * 0.5,
+                        f'FEED PLATE  q={q_val:.3f}',
+                        ha='center', va='center', fontsize=12,
+                        fontweight='bold', color=FEED_COLOR)
+                # Feed arrow
+                ax.annotate('', xy=(gas_x - 0.5, y + plate_spacing * 0.5),
+                            xytext=(gas_x - 2.5, y + plate_spacing * 0.5),
+                            arrowprops=dict(arrowstyle='->', color=FEED_COLOR,
+                                            lw=3))
+                ax.text(gas_x - 3.0, y + plate_spacing * 0.5, 'FEED',
+                        ha='center', va='center', fontsize=11,
+                        fontweight='bold', color=FEED_COLOR)
+            else:
+                # Normal plate
+                color = STRIP_COLOR if ptype == 'strip' else RECT_COLOR
+                label = f'S{pi}' if ptype == 'strip' else f'R{pi}'
+                tw = max(1, dn * 3)
+
+                plate_rect = mpatches.FancyBboxPatch(
+                    (gas_x + 0.8, y + plate_spacing * 0.25),
+                    liq_x - gas_x - 1.6, plate_spacing * 0.5,
+                    boxstyle="round,pad=0.1", facecolor=color,
+                    edgecolor=color, linewidth=1, alpha=0.15, zorder=0)
+                ax.add_patch(plate_rect)
+
+                y_mid = y + plate_spacing * 0.5
+                ax.annotate(
+                    '', xy=(liq_x - 0.5, y_mid),
+                    xytext=(gas_x + 0.5, y_mid),
+                    arrowprops=dict(arrowstyle='->', color=color,
+                                    lw=tw, alpha=0.6))
+                ax.text(cx, y_mid + 0.35, label, fontsize=10,
+                        ha='center', fontweight='bold', color=color)
+                ax.text(cx, y_mid - 0.35,
+                        f'||\u0394||={dn:.3f}', fontsize=9, ha='center',
+                        fontfamily='monospace', color=color)
+
+        # Top / bottom labels
+        top_y = len(all_plates) * plate_spacing
+        ax.text(cx, top_y + 0.8,
+                f'Condenser (R={reflux:.3f})',
+                ha='center', fontsize=12, fontweight='bold', color='#27AE60',
+                bbox=dict(boxstyle='round', facecolor='#D5F5E3', alpha=0.8,
+                          edgecolor='#27AE60'))
+        ax.text(cx, -1.2,
+                f'Reboiler (Rb={reboil:.3f})',
+                ha='center', fontsize=12, fontweight='bold', color=GAS_COLOR,
+                bbox=dict(boxstyle='round', facecolor='#FADBD8', alpha=0.8,
+                          edgecolor=GAS_COLOR))
+
+        # Stream labels
+        ax.text(gas_x, -0.5, 'GAS', ha='center', fontsize=11,
+                fontweight='bold', color=GAS_COLOR)
+        ax.text(liq_x, top_y + 0.2, 'LIQUID', ha='center', fontsize=11,
+                fontweight='bold', color=LIQUID_COLOR)
+
+        ax.set_xlim(-4, liq_x + 3)
+        ax.set_ylim(-2.5, top_y + 2.5)
+
+    ax.set_title(title, fontsize=16, fontweight='bold', pad=15)
     ax.axis('off')
 
     if save_path:
         fig.savefig(save_path)
     plt.tight_layout()
     return fig
+
+
+def column_schematic(
+    model,
+    x: torch.Tensor,
+    context: Optional[torch.Tensor] = None,
+    title: str = "CFNN Column Schematic",
+    figsize: tuple = (10, 14),
+    save_path: Optional[str] = None,
+    style: str = "pid",
+) -> plt.Figure:
+    """
+    Draw a column schematic. Wrapper that dispatches to the chosen style.
+
+    Args:
+        style: 'pid' for P&ID engineering style, 'sankey' for flow diagram.
+    """
+    if style == 'sankey':
+        return column_schematic_sankey(
+            model, x, context, title=title, figsize=figsize, save_path=save_path)
+    return column_schematic_pid(
+        model, x, context, title=title, figsize=figsize, save_path=save_path)
