@@ -78,23 +78,26 @@ Input x                          Initial context c₀
 counterflow-nn/
 ├── src/
 │   ├── __init__.py
-│   ├── plates.py              # CounterFlowPlate, DistillationPlate
-│   ├── network.py             # CFNN_A, CFNN_D, ReactorCascade
-│   ├── activations.py         # Michaelis-Menten, Arrhenius, Hill
-│   ├── diagnostics.py         # Damköhler number, driving force tracking
-│   ├── visualization.py       # McCabe-Thiele plots, concentration profiles
-│   └── utils.py               # Training utilities
+│   ├── plates.py              # CounterFlowPlate (absorption)
+│   ├── network.py             # CounterFlowNetwork (CFNN-A)
+│   ├── distillation.py        # DistillationPlate + DistillationNetwork (CFNN-D)
+│   ├── activations.py         # Michaelis-Menten, Arrhenius, Hill, Autocatalytic
+│   ├── diagnostics.py         # Damköhler number, Murphree efficiency, NTU
+│   └── utils.py               # Training utilities, data loading
 ├── experiments/
-│   ├── tier1_synthetic.py     # XOR, spirals, concentric circles
-│   ├── tier2_tabular.py       # UCI dataset benchmarks
-│   ├── tier3_images.py        # MNIST / FashionMNIST
-│   └── compare_baselines.py   # Head-to-head comparisons
+│   ├── tier1_synthetic.py     # Moons, circles, XOR
+│   ├── compare_baselines.py   # CFNN-A vs MLP vs ResMLP (Phase 1)
+│   ├── tier2_distillation.py  # CFNN-D vs CFNN-A vs MLP (Phase 2)
+│   └── tier3_mnist.py         # MNIST / FashionMNIST (Phase 2)
 ├── notebooks/
-│   └── 01_concept_and_theory.ipynb
+│   ├── 00_run_experiments.ipynb          # Phase 1 Colab notebook
+│   └── 01_phase2_distillation.ipynb      # Phase 2 Colab notebook
 ├── tests/
-│   └── test_plates.py         # Unit tests for conservation, dimensions
+│   ├── test_plates.py         # Unit tests: conservation, dimensions (16 tests)
+│   └── test_distillation.py   # Unit tests: CFNN-D bidirectional, reflux (20 tests)
 ├── docs/
-│   └── CFNN_Technical_Documentation.md
+│   ├── CFNN_Technical_Documentation.md
+│   └── CFNN_Execution_Plan.md
 ├── app.py                     # Gradio Space for HuggingFace
 ├── requirements.txt
 ├── pyproject.toml
@@ -111,30 +114,42 @@ cd counterflow-nn
 # Install
 pip install -e ".[dev,demo]"
 
-# Run synthetic experiments
+# Run Phase 1 experiments
 python experiments/tier1_synthetic.py
+python experiments/compare_baselines.py
 
-# Launch demo
-python app.py
+# Run Phase 2 experiments
+python experiments/tier2_distillation.py
+python experiments/tier3_mnist.py
 ```
 
 ## Usage
 
 ```python
 from src.network import CounterFlowNetwork
+from src.distillation import DistillationNetwork
 
-# Create a CFNN with 5 plates
-model = CounterFlowNetwork(
-    d_in=784,       # input dimension (e.g., flattened MNIST)
-    d_gas=64,       # gas stream dimension
-    d_liquid=64,    # liquid stream dimension
-    n_plates=5,     # number of exchange plates
-    d_out=10,       # output classes
-    n_sweeps=2,     # convergence sweeps
+# CFNN-A: Absorption mode (unidirectional transfer)
+model_a = CounterFlowNetwork(
+    d_in=784, d_gas=64, d_liquid=64,
+    n_plates=5, d_out=10, n_sweeps=2,
 )
 
-# Forward pass
-output = model(x)  # x: (batch_size, 784)
+# CFNN-D: Distillation mode (bidirectional + feed plate + reflux)
+model_d = DistillationNetwork(
+    d_in=784, d_gas=64, d_liquid=64,
+    n_plates_rect=3, n_plates_strip=3,
+    d_out=10, n_sweeps=2,
+    reflux_ratio=0.3, reboil_ratio=0.2,
+)
+
+# Forward pass (both share the same interface)
+output = model_a(x)  # x: (batch_size, 784)
+output = model_d(x)
+
+# Diagnostics
+from src.diagnostics import print_diagnostics
+print_diagnostics(model_a, x, model_name="CFNN-A")
 ```
 
 ## References
