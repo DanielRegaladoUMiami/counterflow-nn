@@ -47,9 +47,9 @@ C_TEAL        = "#3F7D6E"   # muted, for secondary series
 C_STONE       = "#B8997A"   # warm stone, tertiary
 C_RULE        = "#E3DACC"   # soft rule / border
 
-FONT_SERIF = "ui-serif, 'Iowan Old Style', 'Apple Garamond', 'Baskerville', Georgia, serif"
-FONT_SANS  = "ui-sans-serif, -apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
-FONT_MONO  = "ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace"
+FONT_SERIF = "'Source Serif 4', 'Iowan Old Style', 'Apple Garamond', Baskerville, Georgia, serif"
+FONT_SANS  = "'Inter', -apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
+FONT_MONO  = "'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace"
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +390,8 @@ Source: [`src/absorption_tower.py`](https://github.com/DanielRegaladoUMiami/coun
 # ============================================================================
 
 CUSTOM_CSS = f"""
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;1,8..60,400&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
 :root {{
     --canvas:  {C_CANVAS};
     --surface: {C_SURFACE};
@@ -753,7 +755,22 @@ FOOT = """
 
 
 def build_app():
-    with gr.Blocks(title="CounterFlow NN — AbsorptionTower") as demo:
+    # Neutral base theme — custom CSS carries the look.
+    base = gr.themes.Base(
+        primary_hue="orange",
+        neutral_hue="stone",
+        font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"],
+        font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "ui-monospace", "monospace"],
+    ).set(
+        body_background_fill=C_CANVAS,
+        body_background_fill_dark=C_CANVAS,
+        background_fill_primary=C_CANVAS,
+        background_fill_primary_dark=C_CANVAS,
+        background_fill_secondary=C_SURFACE,
+        body_text_color=C_INK,
+        body_text_color_dark=C_INK,
+    )
+    with gr.Blocks(title="CounterFlow NN — AbsorptionTower", theme=base) as demo:
         gr.HTML(HERO)
 
         with gr.Tabs():
@@ -843,4 +860,4 @@ def build_app():
 
 if __name__ == "__main__":
     app = build_app()
-    app.launch(css=CUSTOM_CSS, theme=gr.themes.Soft())
+    app.launch(css=CUSTOM_CSS)
