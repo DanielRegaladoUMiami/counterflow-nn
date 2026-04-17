@@ -1,224 +1,170 @@
-# CounterFlow Neural Network (CFNN)
+# CounterFlow Neural Network
 
-**A Neural Network Architecture Inspired by Chemical Engineering Unit Operations**
+**Chemical engineering unit operations, written as differentiable PyTorch layers.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
+[![Open in Spaces](https://img.shields.io/badge/🤗-Open%20in%20Spaces-FDF4EF.svg)](https://huggingface.co/spaces/DanielRegaladoCardoso/counterflow-nn)
 
-> *"The same equations that govern mass transfer in absorption towers,
-> separation in distillation columns, and reaction in cascaded reactors
-> can define a new class of neural network architectures."*
+![CounterFlow NN — McCabe–Thiele diagram of a 6-stage absorber](docs/images/mccabe_thiele_hero.png)
 
-## The Idea
+A small Python library that renders the canonical countercurrent unit operations — gas absorbers, distillation columns, reactor cascades — as trainable neural-network components. The flagship module, **`AbsorptionTower`**, is a physically-exact multistage absorber solved in closed form via Kremser; every parameter (Henry's constant, solvent-to-gas ratio, Murphree plate efficiency) is a learnable PyTorch tensor.
 
-Standard neural networks propagate information in a single direction. **CFNN** introduces two coupled streams flowing in **opposite directions** with continuous exchange — exactly like a chemical absorption tower:
+Move the sliders in the [interactive Space](https://huggingface.co/spaces/DanielRegaladoCardoso/counterflow-nn) and watch the McCabe–Thiele diagram redraw itself under exact physics.
 
-```
-Input x                          Initial context c₀
-   ↓                                    ↓
-┌──────────────────────────────────────────┐
-│  g₀ = Encoder_g(x)    l₀ = Encoder_l(c₀)│
-└──────────────────────────────────────────┘
-   ↓                                    ↑
-┌──────────────────────────────────────────┐
-│              Plate 1                      │
-│  Δ₁ = T₁(g₀ - E₁(l₁))    ← driving    │
-│  g₁ = g₀ - Δ₁     l₁ = l₂ + Δ₁  force │
-└──────────────────────────────────────────┘
-   ↓                                    ↑
-┌──────────────────────────────────────────┐
-│              Plate 2                      │
-│  Δ₂ = T₂(g₁ - E₂(l₂))                  │
-│  g₂ = g₁ - Δ₂     l₂ = l₃ + Δ₂        │
-└──────────────────────────────────────────┘
-   ↓                                    ↑
-              ...N plates...
-   ↓                                    ↑
-┌──────────────────────────────────────────┐
-│              Plate N                      │
-│  g_N = g_{N-1} - Δ_N  l_N = 0 + Δ_N    │
-└──────────────────────────────────────────┘
-   ↓                                    ↓
- Output_gas = g_N              Output_liquid = l_1
- (cleaned features)            (extracted representation)
+---
+
+## Why
+
+Neural networks propagate information in one direction. Chemical towers don't — gas rises, liquid falls, solute transfers continuously across every tray. The equations that govern those systems — mass balance, equilibrium, driving force — are decades-old, closed-form, and exactly what a neural network approximates when you throw enough data at it.
+
+**CFNN does the work up front.** The physics is baked in; the learnable parameters are the thermodynamic constants. Trade a few percentage points of expressiveness on generic classification for interpretable parameters, sample efficiency, and a forward pass that's guaranteed to conserve mass.
+
+## Validation
+
+Four textbook problems, three solvers, same answer. The `AbsorptionTower` module reproduces each reference to better than `10⁻³` relative error.
+
+| example | A = L/(mG) | N | E | absorbed | rel. error |
+|---|---|---|---|---|---|
+| Treybal 8.2 — acetone / air / water | 1.119 | 6 | 1.00 | 90.06 % | 1.3 × 10⁻⁵ |
+| Seader 6.1 — n-butane oil absorber | 2.630 | 8 | 1.00 | 99.97 % | 1.3 × 10⁻⁴ |
+| Pinch case (A = 1, β = 1) | 1.000 | 5 | 1.00 | 83.33 % | 8.3 × 10⁻⁶ |
+| Real trays, Murphree E = 0.70 | 1.119 | 6 | 0.70 | 84.74 % | 3.1 × 10⁻⁸ |
+
+Reproduce end-to-end in under a second: `python experiments/tier0_physical_validation.py`.
+
+## Install
+
+```bash
+git clone https://github.com/DanielRegaladoUMiami/counterflow-nn.git
+cd counterflow-nn
+pip install -e ".[dev,demo]"
 ```
 
-### Key Properties
+## Quick start
 
-- **Conservation**: What the gas stream loses, the liquid stream gains (Δg = -Δl)
-- **Driving force**: Information exchange is proportional to the difference between streams
-- **Equilibrium mapping**: A learned function defines "equilibrium" between the two streams
-- **Counterflow advantage**: Maintains a non-zero gradient at every layer (may help with vanishing gradients)
+```python
+import torch
+from src.absorption_tower import AbsorptionTower
 
-## Architecture Variants
+tower = AbsorptionTower(
+    d=4,                  # feature dimension / parallel species
+    n_stages=6,           # equilibrium trays
+    L_over_G_init=1.5,    # solvent / gas molar ratio
+    m_init=0.7,           # Henry's constant
+    E_init=0.85,          # Murphree plate efficiency
+)
 
-| Variant | Inspired by | Key Feature |
-|---------|------------|-------------|
-| **AbsorptionTower** | Gas absorber (exact) | Closed-form Kremser solve; learnable physics; textbook-validated |
-| **CFNN-A** | Absorption tower | Unidirectional transfer (gas → liquid), learned equilibrium |
-| **CFNN-D** | Distillation column | Bidirectional transfer + feed plate + reflux |
-| **CFNN-R** | Reactor cascade | CSTR pre/post processing + counterflow core |
+y_feed = torch.rand(batch, 4)       # gas composition at bottom
+x_top  = torch.zeros(batch, 4)      # clean solvent at top
 
-`AbsorptionTower` is the **physically-exact** variant: every parameter
-(`m`, `L/G`, `E`, `b`) is a learnable tensor with a direct chemical-
-engineering meaning, and the forward pass is a single closed-form
-Kremser step — no tray-by-tray iteration. See
-[`docs/AbsorptionTower.md`](docs/AbsorptionTower.md) for the full
-derivation and validation record.
+y_top, x_bot = tower(y_feed, x_top)          # lean gas · rich liquid
+profiles      = tower.profiles(y_feed, x_top) # stage-by-stage, for McCabe–Thiele
+```
 
-## ChemE → Neural Network Mapping
+Full derivation and API in [`docs/AbsorptionTower.md`](docs/AbsorptionTower.md).
 
-| Chemical Engineering | Neural Network |
-|---------------------|---------------|
-| Gas stream (ascending) | Feature stream (forward) |
-| Liquid stream (descending) | Context stream (backward) |
-| Mass transfer coefficient Kya | Learnable transfer coefficient α |
-| Equilibrium curve Y* = f(X) | Learned equilibrium function E(l) |
-| Driving force (Y - Y*) | Stream difference δ = g - E(l) |
-| Number of transfer units (NTU) | Network depth (number of plates) |
-| Conservation of mass | Information conservation constraint |
-| McCabe-Thiele diagram | Neural McCabe-Thiele visualization |
+## Variants
 
-## Project Structure
+| variant | inspiration | key feature |
+|---|---|---|
+| **`AbsorptionTower`** | Gas absorber, exact | Closed-form Kremser solve; learnable physics; textbook-validated |
+| **`CounterFlowNetwork`** (CFNN-A) | Absorption tower | Unidirectional transfer, *learned* equilibrium |
+| **`DistillationNetwork`** (CFNN-D) | Distillation column | Bidirectional transfer + feed plate + reflux |
+| **CFNN-R** *(planned)* | Reactor cascade | CSTR pre/post processing + counterflow core |
+
+`AbsorptionTower` is the physically-exact variant — every scalar has a direct chemical-engineering meaning, and the tower is a single differentiable operation with no internal iteration. `CounterFlowNetwork` (CFNN-A) is the softer variant: counterflow inductive bias, but equilibrium is a learned function rather than `y* = m·x + b`.
+
+## How it works
+
+Two coupled streams flow in opposite directions through N trays. On each tray:
+
+```
+Equilibrium          y*ₙ = m · xₙ + b
+Murphree efficiency  yₙ   = y_{n+1} + E · (y*ₙ − y_{n+1})
+Operating line       y_{n+1} = y₁ + (L/G) · (xₙ − x₀)
+```
+
+Substituting gives a linear recurrence `yₙ = β·y_{n+1} + γ·y₁ + δ` that collapses — via Kremser — to a closed form for `y₁`. The whole tower becomes a single differentiable tensor operation. Every physical parameter is learnable; gradients flow back through the solution without a fixed-point iterate in sight.
+
+## ChemE ↔ neural network mapping
+
+| chemical engineering | neural network |
+|---|---|
+| Gas stream, ascending | Feature stream, forward |
+| Liquid stream, descending | Context stream, backward |
+| Mass transfer coefficient K_ya | Learnable transfer coefficient α |
+| Equilibrium curve y* = f(x) | Learned equilibrium function E(l) (in CFNN-A) or `m·x + b` (in `AbsorptionTower`) |
+| Driving force (y − y*) | Stream difference δ = g − E(l) |
+| Number of transfer units | Network depth |
+| Conservation of mass | Architectural invariant |
+| McCabe–Thiele diagram | Visualization of the forward pass |
+
+## Repository layout
 
 ```
 counterflow-nn/
 ├── src/
-│   ├── __init__.py
-│   ├── absorption_tower.py    # AbsorptionTower + AbsorptionNetwork (exact Kremser)
-│   ├── plates.py              # CounterFlowPlate (learnable CFNN-A)
-│   ├── network.py             # CounterFlowNetwork (CFNN-A)
-│   ├── distillation.py        # DistillationPlate + DistillationNetwork (CFNN-D)
-│   ├── activations.py         # Michaelis-Menten, Arrhenius, Hill, Autocatalytic
-│   ├── diagnostics.py         # Damköhler number, Murphree efficiency, NTU
-│   └── utils.py               # Training utilities, data loading
+│   ├── absorption_tower.py    AbsorptionTower + AbsorptionNetwork (exact Kremser)
+│   ├── plates.py              CounterFlowPlate (learnable CFNN-A)
+│   ├── network.py             CounterFlowNetwork (CFNN-A)
+│   ├── distillation.py        DistillationPlate + DistillationNetwork (CFNN-D)
+│   ├── activations.py         Michaelis–Menten, Arrhenius, Hill, autocatalytic
+│   ├── diagnostics.py         Damköhler, Murphree, NTU
+│   └── utils.py               Training utilities
 ├── experiments/
-│   ├── tier0_physical_validation.py   # AbsorptionTower vs textbook (Treybal, Seader)
-│   ├── tier1_absorption_benchmark.py  # AbsorptionNetwork vs MLP (moons, Kremser-inverse)
-│   ├── tier1_synthetic.py     # Moons, circles, XOR
-│   ├── compare_baselines.py   # CFNN-A vs MLP vs ResMLP (Phase 1)
-│   ├── tier2_distillation.py  # CFNN-D vs CFNN-A vs MLP (Phase 2)
-│   └── tier3_mnist.py         # MNIST / FashionMNIST (Phase 2)
-├── notebooks/
-│   ├── 00_run_experiments.ipynb          # Phase 1 Colab notebook
-│   └── 01_phase2_distillation.ipynb      # Phase 2 Colab notebook
+│   ├── tier0_physical_validation.py   AbsorptionTower vs. textbook
+│   ├── tier1_absorption_benchmark.py  AbsorptionNetwork vs. MLP
+│   ├── tier1_synthetic.py             Moons, circles, XOR
+│   ├── tier2_distillation.py          CFNN-D vs. CFNN-A vs. MLP
+│   └── tier3_mnist.py                 MNIST / FashionMNIST
 ├── tests/
-│   ├── test_absorption_tower.py  # Kremser, mass balance, Murphree, limits (30 tests)
-│   ├── test_plates.py            # CFNN-A conservation, dimensions (16 tests)
-│   └── test_distillation.py      # CFNN-D bidirectional, reflux (20 tests)
+│   ├── test_absorption_tower.py       30 physics + gradient tests
+│   ├── test_plates.py                 16 tests (CFNN-A)
+│   └── test_distillation.py           20 tests (CFNN-D)
 ├── docs/
-│   ├── AbsorptionTower.md                 # Derivation + API + validation
+│   ├── AbsorptionTower.md             Derivation + API + validation
 │   ├── CFNN_Technical_Documentation.md
 │   └── CFNN_Execution_Plan.md
-├── app.py                     # Gradio Space — editorial UI with live McCabe–Thiele
+├── app.py                      Gradio Space — live McCabe–Thiele
 ├── CHANGELOG.md
 ├── requirements.txt
-├── pyproject.toml
-└── LICENSE
+└── pyproject.toml
 ```
 
-## Quick Start
+## Running the experiments
 
 ```bash
-# Clone
-git clone https://github.com/DanielRegaladoUMiami/counterflow-nn.git
-cd counterflow-nn
-
-# Install
-pip install -e ".[dev,demo]"
-
-# Physical validation of the exact AbsorptionTower (< 1s, no training)
+# Under a second, no training — validates against Treybal, Seader.
 python experiments/tier0_physical_validation.py
 
-# Phase 1 experiments
+# Phase 1 benchmarks
 python experiments/tier1_absorption_benchmark.py
 python experiments/tier1_synthetic.py
 python experiments/compare_baselines.py
 
-# Phase 2 experiments
+# Phase 2 benchmarks
 python experiments/tier2_distillation.py
 python experiments/tier3_mnist.py
 
-# Interactive Gradio app — live McCabe–Thiele + training demo
+# Interactive Gradio app — localhost:7860
 python app.py
-```
-
-## Usage
-
-### AbsorptionTower — the physically-exact layer
-
-```python
-import torch
-from src.absorption_tower import AbsorptionTower, AbsorptionNetwork
-
-# A batch of absorbers in parallel — one per feature channel.
-tower = AbsorptionTower(
-    d=4,                  # feature dimension
-    n_stages=6,           # number of equilibrium trays N
-    L_over_G_init=1.5,    # solvent / gas molar ratio
-    m_init=0.7,           # Henry's constant
-    E_init=0.85,          # Murphree plate efficiency
-    b_init=0.0,           # equilibrium intercept
-)
-
-y_feed = torch.rand(batch, 4)    # gas in at bottom
-x_top  = torch.zeros(batch, 4)   # solvent in at top
-
-# Closed-form Kremser solve — O(1) in N, fully differentiable.
-y_top, x_bot = tower(y_feed, x_top)
-
-# Stage-by-stage compositions for McCabe–Thiele plots.
-profiles = tower.profiles(y_feed, x_top)
-
-# Drop-in classifier built on the exact tower:
-net = AbsorptionNetwork(d_in=10, d_tower=16, d_out=2, n_stages=6)
-```
-
-See [`docs/AbsorptionTower.md`](docs/AbsorptionTower.md) for the full
-derivation, API, and textbook validation record.
-
-### CFNN-A and CFNN-D — the learnable-equilibrium variants
-
-```python
-from src.network import CounterFlowNetwork
-from src.distillation import DistillationNetwork
-
-# CFNN-A: Absorption mode (unidirectional transfer)
-model_a = CounterFlowNetwork(
-    d_in=784, d_gas=64, d_liquid=64,
-    n_plates=5, d_out=10, n_sweeps=2,
-)
-
-# CFNN-D: Distillation mode (bidirectional + feed plate + reflux)
-model_d = DistillationNetwork(
-    d_in=784, d_gas=64, d_liquid=64,
-    n_plates_rect=3, n_plates_strip=3,
-    d_out=10, n_sweeps=2,
-    reflux_ratio=0.3, reboil_ratio=0.2,
-)
-
-# Forward pass (both share the same interface)
-output = model_a(x)  # x: (batch_size, 784)
-output = model_d(x)
-
-# Diagnostics
-from src.diagnostics import print_diagnostics
-print_diagnostics(model_a, x, model_name="CFNN-A")
 ```
 
 ## References
 
-- Treybal, R.E. *"Mass Transfer Operations,"* 3rd Ed., McGraw-Hill, 1980
-- Fogler, H.S. *"Elements of Chemical Reaction Engineering,"* 6th Ed.
-- Bai, S., Kolter, J.Z., Koltun, V. *"Deep Equilibrium Models,"* NeurIPS 2019
-- Chen, R.T.Q. et al. *"Neural Ordinary Differential Equations,"* NeurIPS 2018
+- Treybal, R.E. *Mass Transfer Operations*, 3rd ed., McGraw-Hill, 1980 — Ch. 8, Kremser equation
+- Seader, J.D., Henley, E.J., Roper, D.K. *Separation Process Principles*, 3rd ed., Wiley, 2011
+- Murphree, E.V. *Rectifying column calculations*, Ind. Eng. Chem. 17(7): 747–750, 1925
+- Bai, S., Kolter, J.Z., Koltun, V. *Deep Equilibrium Models*, NeurIPS 2019
+- Chen, R.T.Q. et al. *Neural Ordinary Differential Equations*, NeurIPS 2018
 
 ## Author
 
-**Daniel Regalado Cardoso** — BS Chemical Engineering + MSBA
-University of Miami | [GitHub](https://github.com/DanielRegaladoUMiami)
+**Daniel Regalado Cardoso** — BS Chemical Engineering + MSBA, University of Miami.
+[GitHub](https://github.com/DanielRegaladoUMiami) · [Space](https://huggingface.co/spaces/DanielRegaladoCardoso/counterflow-nn)
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).
